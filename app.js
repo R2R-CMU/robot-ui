@@ -167,11 +167,11 @@ function updateFeed(it) {
   const want = it && CLIPS[it.key];
   if (want && want !== feed.clip) { feed.clip = want; v.src = want; v.load(); }
   else if (!feed.clip) { feed.clip = CLIPS['a-pillar trim']; v.src = feed.clip; v.load(); }
-  const playing = S.status === 'running';
+  const playing = S.status === 'running' || S.status === 'attention';   // camera stays live while the robot waits for the operator
   if (playing && v.paused) { const p = v.play(); if (p && p.catch) p.catch(() => {}); }
   if (!playing && !v.paused) v.pause();
   const msg = { idle: ['Waiting to start', 'Press START'], paused: ['Stream paused', 'Robot stopped. Press RESUME'],
-    attention: ['Stream paused', 'Robot is waiting for you'], estop: ['Emergency stop', 'Stream stopped'], done: ['Order complete', 'Stream stopped'] }[S.status];
+    estop: ['Emergency stop', 'Stream stopped'], done: ['Order complete', 'Stream stopped'] }[S.status];
   $('paused').hidden = playing;
   if (msg) { $('paused-title').textContent = msg[0]; $('paused-sub').textContent = msg[1]; }
   $('frame').classList.toggle('off', !playing);
