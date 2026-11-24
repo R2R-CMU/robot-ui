@@ -71,11 +71,14 @@ function parseOrder(text) {
   return { item: { id: nextId++, qty, qty0: qty, key, label: PARTS[key].label, rack, fixture, done: 0 } };
 }
 function addOrder(text) {
+  if (S.status === 'done') {            // a finished mission: adding starts a fresh batch
+    S.order = []; S.rack = freshRack(); S.fixtures = { 1: 0, 2: 0 }; S.status = 'idle'; S.phase = null; S.cell = null; S.sillChecked = false;
+    logEv('batch', 'New order started');
+  }
   const r = parseOrder(text);
   if (r.err) return r;
   S.order.push(r.item);
   logEv('batch', `Added ${r.item.qty} x ${r.item.label} (Rack ${r.item.rack} to Fixture ${r.item.fixture})`);
-  if (S.status === 'done') { S.status = 'idle'; }
   return r;
 }
 
@@ -173,18 +176,53 @@ const feed = { v: $('ego'), clip: null, restart: false };
 function updateFeed(it) {
   const v = feed.v;
   const want = it && CLIPS[it.key];
-  if (want && want !== feed.clip) { feed.clip = want; v.src = want; v.load(); }
-  else if (!feed.clip) { feed.clip = CLIPS['a-pillar trim']; v.src = feed.clip; v.load(); }
+  if (!want) { if (feed.clip) { feed.clip = null; v.removeAttribute('src'); v.load(); } }
+  else if (want !== feed.clip) { feed.clip = want; v.src = want; v.load(); }
   if (feed.restart) { feed.restart = false; try { v.currentTime = 0; } catch (e) {} }
   const playing = S.status === 'running' || S.status === 'attention';   // camera stays live while the robot waits for the operator
   if (playing && v.paused) { const p = v.play(); if (p && p.catch) p.catch(() => {}); }
   if (!playing && !v.paused) v.pause();
-  const msg = { idle: ['Waiting to start', 'Press START'], paused: ['Stream paused', 'Robot stopped. Press RESUME'],
+  const msg = { idle: S.order.length ? ['Waiting to start', 'Press START to begin the mission'] : ['No order yet', 'Add parts to the order, then press START'], paused: ['Stream paused', 'Robot stopped. Press RESUME'],
     estop: ['Emergency stop', 'Stream stopped'], done: ['Order complete', 'Stream stopped'] }[S.status];
   $('paused').hidden = playing;
   if (msg) { $('paused-title').textContent = msg[0]; $('paused-sub').textContent = msg[1]; }
   $('frame').classList.toggle('off', !playing);
   $('live').lastElementChild.textContent = playing ? 'LIVE' : 'OFFLINE';
+}
+
+/* ---------- available commands ---------- */
+const EXAMPLES = ['2 air ducts from Rack 1 to Fixture 2', '3 A-pillar trim from Rack 2 to Fixture 1', '1 sill trim to Fixture 1'];
+let helpKey = '';
+function freeParts(rack) {
+  const ready = S.rack[rack - 1].filter((c) => c === 'full' || c === 'pick').length;
+  const planned = S.order.filter((o) => o.rack === rack).reduce((a, o) => a + (o.qty - o.done), 0);
+  return Math.max(0, ready - planned);
+}
+function renderHelp() {
+  const free = [1, 2, 3].map(freeParts), key = free.join(',');
+  if (key === helpKey) return; helpKey = key;
+  const body = $('help-body'); body.textContent = '';
+  const h1 = document.createElement('h3'); h1.textContent = 'Parts you can ask for'; body.appendChild(h1);
+  const ul = document.createElement('ul'); ul.className = 'parts';
+  Object.keys(PARTS).forEach((k) => {
+    const p = PARTS[k], n = free[p.rack - 1], li = document.createElement('li');
+    li.innerHTML = '<span class="pn"></span><span class="pr"></span><span class="pa"></span>';
+    li.querySelector('.pn').textContent = p.label; li.querySelector('.pr').textContent = `Rack ${p.rack}`;
+    const pa = li.querySelector('.pa'); pa.textContent = n ? `${n} available` : 'none left'; if (!n) pa.classList.add('none');
+    ul.appendChild(li);
+  });
+  body.appendChild(ul);
+  const h2 = document.createElement('h3'); h2.textContent = 'Try one (tap to fill the box)'; body.appendChild(h2);
+  const ex = document.createElement('div'); ex.className = 'ex-list';
+  EXAMPLES.forEach((t) => {
+    const b = document.createElement('button'); b.type = 'button'; b.className = 'ex'; b.textContent = t;
+    b.addEventListener('click', () => { const i = $('add-input'); i.value = t; i.focus(); });
+    ex.appendChild(b);
+  });
+  body.appendChild(ex);
+  const tip = document.createElement('p'); tip.className = 'tip';
+  tip.textContent = 'Controls: START begins or restarts the mission. STOP pauses it. RESUME continues. E-STOP is the emergency stop.';
+  body.appendChild(tip);
 }
 
 /* ---------- operator window render ---------- */
@@ -245,7 +283,7 @@ function render() {
     li.querySelector('.pill').textContent = label;
     ul.appendChild(li);
   });
-  if (!S.order.length) { const li = document.createElement('li'); li.textContent = 'No items yet.'; ul.appendChild(li); }
+  if (!S.order.length) { const li = document.createElement('li'); li.textContent = 'Nothing ordered yet. Add a part below.'; ul.appendChild(li); }
 
   const rk = $('rack'); rk.textContent = '';
   const names = ['Air duct', 'A-pillar trim', 'Sill trim'], txt = { full: 'Part ready', empty: 'Empty', pick: 'Picking now', warn: 'Check' };
@@ -255,6 +293,7 @@ function render() {
   });
 
   updateFeed(it || S.order[S.order.length - 1]);
+  renderHelp();
 
   const bat = Math.round(S.battery);
   $('chip-batt').lastElementChild.textContent = `Battery ${bat}%`;
@@ -378,9 +417,7 @@ $('cal-today').onclick = () => { selected = TODAY; view = new Date(today.getFull
 $('cal-yest').onclick = () => { const y = new Date(today.getFullYear(), today.getMonth(), today.getDate() - 1); selected = dkey(y); view = new Date(y.getFullYear(), y.getMonth(), 1); renderCalendar(); renderDay(); };
 
 /* ---------- boot ---------- */
-['3 x A-pillar trim from Rack 2 to Fixture 1', '2 x Air duct from Rack 1 to Fixture 2', '1 x Sill trim from Rack 3 to Fixture 1'].forEach(addOrder);
 logEv('batch', 'Session opened (demo)');
-S.status = 'running'; logEv('batch', 'Robot started the order (demo)');
 setRole(location.hash.slice(1));
 renderCalendar(); renderDay(); render();
 setInterval(tick, 500);

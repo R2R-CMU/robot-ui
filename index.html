@@ -83,8 +83,12 @@
               <input id="add-input" type="text" placeholder="e.g. 2 air ducts from Rack 1 to Fixture 2" aria-describedby="add-msg">
               <button class="btn primary" type="submit">Add</button>
             </div>
-            <div id="add-msg" class="add-msg" aria-live="polite">The robot will ask you if anything is unclear.</div>
+            <div id="add-msg" class="add-msg" aria-live="polite">Pick an example below or type your own, then press Add.</div>
           </form>
+          <details id="help" class="help" open>
+            <summary>Available commands</summary>
+            <div id="help-body"></div>
+          </details>
         </section>
 
         <section class="card">
