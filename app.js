@@ -171,18 +171,37 @@ function tick() {
 }
 
 /* ---------- ego-view stream (sample clips; swap for a real stream later) ---------- */
+// One playlist per mission: every unique clip plays once, in order, and only wraps after all of them.
+// The clip for the first part in the order leads; the other two core clips follow, then the extras.
 const CLIPS = { 'a-pillar trim': 'video/ego_a_pillar.mp4', 'air duct': 'video/ego_air_duct.mp4', 'sill trim': 'video/ego_sill_trim.mp4' };
-const feed = { v: $('ego'), clip: null, restart: false };
+const EXTRA = ['video/ego_extra_1.mp4', 'video/ego_extra_2.mp4', 'video/ego_extra_3.mp4'];
+const feed = { v: $('ego'), list: null, idx: 0, firstKey: null, restart: false, want: false };
+function buildList(firstKey) {
+  const keys = Object.keys(CLIPS), i = Math.max(0, keys.indexOf(firstKey));
+  return keys.slice(i).concat(keys.slice(0, i)).map((k) => CLIPS[k]).concat(EXTRA);
+}
+function loadClip(i) {
+  feed.idx = i % feed.list.length;
+  feed.v.src = feed.list[feed.idx]; feed.v.load();
+}
+feed.v.addEventListener('ended', () => {
+  if (!feed.list) return;
+  loadClip(feed.idx + 1);
+  if (feed.want) { const p = feed.v.play(); if (p && p.catch) p.catch(() => {}); }
+});
 function updateFeed(it) {
-  const v = feed.v;
-  const want = it && CLIPS[it.key];
-  if (!want) { if (feed.clip) { feed.clip = null; v.removeAttribute('src'); v.load(); } }
-  else if (want !== feed.clip) { feed.clip = want; v.src = want; v.load(); }
-  if (feed.restart) { feed.restart = false; try { v.currentTime = 0; } catch (e) {} }
+  const v = feed.v, first = S.order[0];
+  if (!first) {                                   // no order: no video
+    if (feed.list) { feed.list = null; feed.firstKey = null; v.removeAttribute('src'); v.load(); }
+  } else if (feed.restart || !feed.list || (S.status === 'idle' && first.key !== feed.firstKey)) {
+    feed.restart = false; feed.firstKey = first.key; feed.list = buildList(first.key); loadClip(0);
+  }
   const playing = S.status === 'running' || S.status === 'attention';   // camera stays live while the robot waits for the operator
-  if (playing && v.paused) { const p = v.play(); if (p && p.catch) p.catch(() => {}); }
+  feed.want = playing;
+  if (playing && v.paused && feed.list) { const p = v.play(); if (p && p.catch) p.catch(() => {}); }
   if (!playing && !v.paused) v.pause();
-  const msg = { idle: S.order.length ? ['Waiting to start', 'Press START to begin the mission'] : ['No order yet', 'Add parts to the order, then press START'], paused: ['Stream paused', 'Robot stopped. Press RESUME'],
+  const msg = { idle: S.order.length ? ['Waiting to start', 'Press START to begin the mission'] : ['No order yet', 'Add parts to the order, then press START'],
+    paused: ['Stream paused', 'Robot stopped. Press RESUME'],
     estop: ['Emergency stop', 'Stream stopped'], done: ['Order complete', 'Stream stopped'] }[S.status];
   $('paused').hidden = playing;
   if (msg) { $('paused-title').textContent = msg[0]; $('paused-sub').textContent = msg[1]; }
@@ -292,7 +311,7 @@ function render() {
     row.forEach((st2) => { const c = document.createElement('div'); c.className = 'cell ' + st2; c.textContent = txt[st2]; rk.appendChild(c); });
   });
 
-  updateFeed(it || S.order[S.order.length - 1]);
+  updateFeed();
   renderHelp();
 
   const bat = Math.round(S.battery);
