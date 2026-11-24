@@ -1,0 +1,131 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Robot Line Assistant</title>
+<meta name="description" content="Operator console and daily log for a Unitree G1 pick-and-place cell.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header class="top">
+  <div class="brand">Robot Line Assistant</div>
+  <nav class="roles" aria-label="View">
+    <button id="tab-operator" type="button" data-role="operator">Operator</button>
+    <button id="tab-manager" type="button" data-role="manager">Manager</button>
+  </nav>
+  <div class="spacer"></div>
+  <div class="chip" id="chip-robot"><i class="dot ok"></i><span>Robot OK</span></div>
+  <div class="chip" id="chip-batt"><i class="dot ok"></i><span>Battery 78%</span></div>
+  <button id="estop" class="estop" type="button">E-STOP</button>
+</header>
+
+<main id="app">
+  <section class="opwin" aria-label="Operator window">
+    <div id="banner" class="banner">
+      <i class="lamp" aria-hidden="true"></i>
+      <div class="b-main">
+        <div id="b-state" class="b-state">READY</div>
+        <div id="b-text" class="b-text"></div>
+      </div>
+      <div class="b-side">
+        <div id="b-count" class="b-count"></div>
+        <div id="b-eta" class="b-eta"></div>
+      </div>
+      <div class="bar" aria-hidden="true"><div id="b-fill" class="fill"></div></div>
+    </div>
+
+    <section id="attention" class="attention" role="alert" hidden>
+      <div class="a-head">Needs your attention</div>
+      <div class="a-body">
+        <div>
+          <div id="a-title" class="a-title"></div>
+          <div class="a-sub">Look at the rack, then choose.</div>
+        </div>
+        <div class="a-actions">
+          <button id="a-ok" class="btn primary" type="button">Part is there - continue</button>
+          <button id="a-skip" class="btn" type="button">Skip this slot</button>
+        </div>
+      </div>
+    </section>
+
+    <div class="op-grid">
+      <div class="col">
+        <section class="card video-card">
+          <div class="c-head"><h2>Robot camera</h2><span class="tag">Ego view</span></div>
+          <div class="frame" id="frame">
+            <video id="ego" muted playsinline loop preload="auto" aria-label="Ego view from the robot (sample footage)"></video>
+            <div class="live" id="live"><i></i><span>LIVE</span></div>
+            <div class="sample">Sample footage</div>
+            <div class="paused" id="paused" hidden><b id="paused-title">Stream paused</b><span id="paused-sub"></span></div>
+          </div>
+          <p class="c-note">Stand-in for the G1 head camera; the clip changes with the part being moved. Footage: Boston Dynamics, <a href="https://www.youtube.com/watch?v=F_7IPm7f1vI" target="_blank" rel="noopener">Atlas Goes Hands On</a> (egocentric view).</p>
+        </section>
+
+        <section class="card controls">
+          <div class="c-head"><h2>Controls</h2></div>
+          <div class="ctl">
+            <button id="b-start" class="big go" type="button">START</button>
+            <button id="b-stop" class="big stop" type="button">STOP</button>
+            <button id="b-resume" class="big resume" type="button">RESUME</button>
+          </div>
+        </section>
+      </div>
+
+      <div class="col">
+        <section class="card">
+          <div class="c-head"><h2>Today's order</h2></div>
+          <ul id="order" class="order"></ul>
+          <form id="add-form" class="add" autocomplete="off">
+            <label for="add-input">Add to order</label>
+            <div class="add-row">
+              <input id="add-input" type="text" placeholder="e.g. 2 air ducts from Rack 1 to Fixture 2" aria-describedby="add-msg">
+              <button class="btn primary" type="submit">Add</button>
+            </div>
+            <div id="add-msg" class="add-msg" aria-live="polite">The robot will ask you if anything is unclear.</div>
+          </form>
+        </section>
+
+        <section class="card">
+          <div class="c-head"><h2>Rack</h2></div>
+          <div id="rack" class="rack"></div>
+          <ul class="legend" aria-label="Legend">
+            <li><i class="sw full"></i>Part ready</li>
+            <li><i class="sw pick"></i>Picking now</li>
+            <li><i class="sw empty"></i>Empty</li>
+            <li><i class="sw warn"></i>Needs check</li>
+          </ul>
+        </section>
+      </div>
+    </div>
+  </section>
+
+  <aside id="calendar" class="calendar" aria-label="Daily log">
+    <section class="card cal-card">
+      <div class="c-head">
+        <h2 id="cal-title">Daily log</h2>
+        <div class="cal-nav">
+          <button id="cal-prev" class="icon" type="button" aria-label="Previous month">&lsaquo;</button>
+          <button id="cal-next" class="icon" type="button" aria-label="Next month">&rsaquo;</button>
+        </div>
+      </div>
+      <div class="cal-quick">
+        <button id="cal-yest" class="btn small" type="button">Yesterday</button>
+        <button id="cal-today" class="btn small" type="button">Today</button>
+      </div>
+      <div id="cal-grid" class="cal-grid" role="grid"></div>
+      <div class="cal-key"><span><i class="dot ok"></i>Smooth day</span><span><i class="dot warn"></i>Needed help</span><span>Number = parts placed</span></div>
+    </section>
+    <section class="card day-card">
+      <div class="c-head"><h2 id="day-title">Day</h2><span id="day-tag" class="tag"></span></div>
+      <div id="day-stats" class="stats"></div>
+      <ol id="day-log" class="log"></ol>
+    </section>
+  </aside>
+</main>
+<script src="app.js"></script>
+</body>
+</html>
