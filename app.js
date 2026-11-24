@@ -25,12 +25,15 @@ const S = {
   phase: null, phaseT: 0, cell: null, resumeTo: 'running',
   fixtures: { 1: 0, 2: 0 },
   runSec: 0, battery: 78, sillChecked: false,
-  rack: [
+  rack: freshRack(),
+};
+function freshRack() {
+  return [
     ['full','full','full','empty'],
     ['full','full','full','full'],
     ['full','full','full','empty'],
-  ],
-};
+  ];
+}
 let nextId = 1;
 
 /* ---------- log (today) ---------- */
@@ -65,7 +68,7 @@ function parseOrder(text) {
   const ready = S.rack[rack - 1].filter((c) => c === 'full' || c === 'pick').length;
   const planned = S.order.filter((o) => o.rack === rack).reduce((a, o) => a + (o.qty - o.done), 0);
   if (ready - planned < qty) return { err: `Rack ${rack} only has ${Math.max(0, ready - planned)} part(s) free for this order.` };
-  return { item: { id: nextId++, qty, key, label: PARTS[key].label, rack, fixture, done: 0 } };
+  return { item: { id: nextId++, qty, qty0: qty, key, label: PARTS[key].label, rack, fixture, done: 0 } };
 }
 function addOrder(text) {
   const r = parseOrder(text);
@@ -79,8 +82,13 @@ function addOrder(text) {
 /* ---------- actions ---------- */
 const pending = () => S.order.find((o) => o.done < o.qty);
 function start() {
-  if (!(S.status === 'idle' || S.status === 'done') || !pending()) return;
-  S.status = 'running'; logEv('batch', 'Operator pressed START');
+  // START always (re)starts the mission from the top: progress, rack and fixtures reset, video replays.
+  if (!(S.status === 'idle' || S.status === 'done' || S.status === 'paused') || !S.order.length) return;
+  S.order.forEach((o) => { o.done = 0; o.qty = o.qty0; });
+  S.rack = freshRack(); S.fixtures = { 1: 0, 2: 0 };
+  S.phase = null; S.phaseT = 0; S.cell = null; S.sillChecked = false; S.resumeTo = 'running';
+  feed.restart = true;
+  S.status = 'running'; logEv('batch', 'Operator pressed START: mission restarted');
 }
 function stop() {
   if (S.status !== 'running' && S.status !== 'attention') return;
@@ -161,12 +169,13 @@ function tick() {
 
 /* ---------- ego-view stream (sample clips; swap for a real stream later) ---------- */
 const CLIPS = { 'a-pillar trim': 'video/ego_a_pillar.mp4', 'air duct': 'video/ego_air_duct.mp4', 'sill trim': 'video/ego_sill_trim.mp4' };
-const feed = { v: $('ego'), clip: null };
+const feed = { v: $('ego'), clip: null, restart: false };
 function updateFeed(it) {
   const v = feed.v;
   const want = it && CLIPS[it.key];
   if (want && want !== feed.clip) { feed.clip = want; v.src = want; v.load(); }
   else if (!feed.clip) { feed.clip = CLIPS['a-pillar trim']; v.src = feed.clip; v.load(); }
+  if (feed.restart) { feed.restart = false; try { v.currentTime = 0; } catch (e) {} }
   const playing = S.status === 'running' || S.status === 'attention';   // camera stays live while the robot waits for the operator
   if (playing && v.paused) { const p = v.play(); if (p && p.catch) p.catch(() => {}); }
   if (!playing && !v.paused) v.pause();
@@ -219,7 +228,7 @@ function render() {
   if (showAtt && S.cell) $('a-title').textContent = `Rack ${S.cell.r + 1}, slot ${S.cell.c + 1}: the robot can't tell if a part is there.`;
 
   const live = S.status === 'running' || S.status === 'attention';
-  $('b-start').disabled = !((S.status === 'idle' || S.status === 'done') && pending());
+  $('b-start').disabled = !((S.status === 'idle' || S.status === 'done' || S.status === 'paused') && S.order.length);
   $('b-stop').disabled = !live;
   $('b-resume').disabled = S.status !== 'paused';
   $('estop').textContent = S.status === 'estop' ? 'RESET' : 'E-STOP';
