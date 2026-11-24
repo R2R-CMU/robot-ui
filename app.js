@@ -22,7 +22,7 @@ const safe = {
 const S = {
   status: 'idle',            // idle | running | paused | attention | done | estop
   order: [],
-  phase: null, phaseT: 0, cell: null, resumeTo: 'running',
+  phase: null, cell: null, unitCell: null, active: null, T: 0, resumeTo: 'running',
   fixtures: { 1: 0, 2: 0 },
   runSec: 0, battery: 78, sillChecked: false,
   rack: freshRack(),
@@ -72,14 +72,37 @@ function parseOrder(text) {
 }
 function addOrder(text) {
   if (S.status === 'done') {            // a finished mission: adding starts a fresh batch
-    S.order = []; S.rack = freshRack(); S.fixtures = { 1: 0, 2: 0 }; S.status = 'idle'; S.phase = null; S.cell = null; S.sillChecked = false;
+    S.order = []; S.rack = freshRack(); S.fixtures = { 1: 0, 2: 0 }; S.status = 'idle'; S.phase = null; S.cell = null; S.unitCell = null; S.active = null; S.T = 0; S.sillChecked = false; plan = null;
     logEv('batch', 'New order started');
   }
   const r = parseOrder(text);
   if (r.err) return r;
   S.order.push(r.item);
+  if (plan && S.status !== 'idle') addLine(r.item);        // mission in progress: append this line to the timeline
   logEv('batch', `Added ${r.item.qty} x ${r.item.label} (Rack ${r.item.rack} to Fixture ${r.item.fixture})`);
   return r;
+}
+
+/* ---------- mission plan: the video is the clock ---------- */
+// Each order line gets its own part's clip, plus unused extra clips if it needs more time, so nothing repeats.
+// Mission progress = footage played / total footage (0-100 %); parts are marked placed as the footage passes
+// evenly spaced points inside each line's share of the timeline.
+const CLIPS = { 'a-pillar trim': 'video/ego_a_pillar.mp4', 'air duct': 'video/ego_air_duct.mp4', 'sill trim': 'video/ego_sill_trim.mp4' };
+const EXTRA = ['video/ego_extra_1.mp4', 'video/ego_extra_2.mp4', 'video/ego_extra_3.mp4'];
+const DUR = { 'video/ego_a_pillar.mp4': 12.029, 'video/ego_air_duct.mp4': 5.005, 'video/ego_sill_trim.mp4': 4.522,
+  'video/ego_extra_1.mp4': 3.304, 'video/ego_extra_2.mp4': 2.803, 'video/ego_extra_3.mp4': 1.819 };
+const SEC_PER_UNIT = 3.5;
+let plan = null;                                   // { segs:[{src,dur,start}], lines:[{o,t0,t1}], L, used:Set, key }
+function addLine(o) {
+  const srcs = [CLIPS[o.key]]; let dur = DUR[srcs[0]];
+  for (const e of EXTRA) { if (dur >= o.qty0 * SEC_PER_UNIT) break; if (plan.used.has(e)) continue; srcs.push(e); plan.used.add(e); dur += DUR[e]; }
+  const t0 = plan.L;
+  srcs.forEach((src) => { plan.segs.push({ src, dur: DUR[src], start: plan.L }); plan.L += DUR[src]; });
+  plan.lines.push({ o, t0, t1: plan.L });
+}
+function buildPlan(lines) {
+  plan = { segs: [], lines: [], L: 0, used: new Set(), key: lines.map((o) => o.key + o.qty0).join() };
+  lines.forEach(addLine);
 }
 
 /* ---------- actions ---------- */
@@ -89,8 +112,8 @@ function start() {
   if (!(S.status === 'idle' || S.status === 'done' || S.status === 'paused') || !S.order.length) return;
   S.order.forEach((o) => { o.done = 0; o.qty = o.qty0; });
   S.rack = freshRack(); S.fixtures = { 1: 0, 2: 0 };
-  S.phase = null; S.phaseT = 0; S.cell = null; S.sillChecked = false; S.resumeTo = 'running';
-  feed.restart = true;
+  S.phase = null; S.cell = null; S.unitCell = null; S.active = null; S.sillChecked = false; S.resumeTo = 'running'; S.T = 0;
+  buildPlan(S.order); loadClip(0);
   S.status = 'running'; logEv('batch', 'Operator pressed START: mission restarted');
 }
 function stop() {
@@ -116,7 +139,7 @@ function confirmPart() {
 }
 function skipSlot() {
   const { r, c } = S.cell;
-  answer(() => { S.rack[r][c] = 'empty'; S.phase = null; }, `Operator skipped Rack ${r + 1}, slot ${c + 1}`);
+  answer(() => { S.rack[r][c] = 'empty'; }, `Operator skipped Rack ${r + 1}, slot ${c + 1}`);
 }
 function estop() {
   if (S.status === 'estop') {
@@ -130,78 +153,92 @@ function estop() {
   S.status = 'estop'; logEv('stop', 'EMERGENCY STOP pressed');
 }
 
-/* ---------- simulation (1 tick = 0.5 s) ---------- */
-const PH = { locate: 1, pick: 2, place: 2 };
+/* ---------- ego-view stream = the mission clock (sample clips; swap for a real stream later) ---------- */
+const feed = { v: $('ego'), idx: 0, ready: false, failed: false, want: false };
+function loadClip(i) {
+  feed.idx = i; feed.ready = false; feed.failed = false;
+  feed.v.src = plan.segs[i].src; feed.v.load();
+}
+const elapsed = () => (plan ? plan.segs[feed.idx].start + (feed.ready ? feed.v.currentTime : 0) : 0);
+feed.v.addEventListener('loadeddata', () => { feed.ready = true; });
+feed.v.addEventListener('error', () => { if (plan) feed.failed = true; });   // clip missing: fall back to a wall clock
+feed.v.addEventListener('ended', () => {
+  if (!plan || S.status === 'idle') return;
+  const seg = plan.segs[feed.idx];
+  if (feed.idx < plan.segs.length - 1) {
+    advance(seg.start + seg.dur);
+    if (S.status === 'running') { loadClip(feed.idx + 1); const p = feed.v.play(); if (p && p.catch) p.catch(() => {}); }
+  } else advance(plan.L);
+});
+
+function completeUnit(o) {
+  const u = S.unitCell;
+  if (u && u.key === o.id + ':' + o.done) S.rack[u.r][u.c] = 'empty';
+  else { const c = S.rack[o.rack - 1].findIndex((x) => x === 'full' || x === 'pick'); if (c >= 0) S.rack[o.rack - 1][c] = 'empty'; }
+  S.unitCell = null; o.done++; S.fixtures[o.fixture]++;
+  logEv('placed', `Placed ${o.label} on Fixture ${o.fixture} (${o.done} of ${o.qty})`, 1);
+}
+function advance(T) {
+  if (!plan) return;
+  S.T = Math.min(Math.max(S.T, T), plan.L);
+  for (const ln of plan.lines) {
+    const o = ln.o;
+    if (S.T < ln.t0) break;
+    if (o.key === 'sill trim' && !S.sillChecked && o.done === 0 && o.qty > 0) {          // demo: one slot the robot cannot verify
+      const row = S.rack[o.rack - 1], c = row.findIndex((x) => x === 'full');
+      S.cell = { r: o.rack - 1, c: c < 0 ? 0 : c }; row[S.cell.c] = 'warn'; S.unitCell = null; S.active = o; S.phase = 'locate';
+      S.status = 'attention';
+      logEv('attention', `Needs attention: Rack ${o.rack}, slot ${S.cell.c + 1} - robot cannot tell if a part is there`);
+      return;
+    }
+    const span = (ln.t1 - ln.t0) / o.qty0;
+    while (o.done < o.qty && S.T >= ln.t0 + (o.done + 1) * span - 1e-6) completeUnit(o);
+  }
+  // what the robot is doing right now (for the banner and the rack)
+  const ln = plan.lines.find((l) => S.T >= l.t0 && S.T < l.t1 && l.o.done < l.o.qty);
+  S.active = ln ? ln.o : null; S.phase = null;
+  if (ln) {
+    const o = ln.o, span = (ln.t1 - ln.t0) / o.qty0, f = (S.T - ln.t0) / span - o.done;
+    const key = o.id + ':' + o.done;
+    if (!S.unitCell || S.unitCell.key !== key) {
+      const c = S.rack[o.rack - 1].findIndex((x) => x === 'full');
+      if (c < 0) {
+        logEv('attention', `Rack ${o.rack} has no more parts. ${o.label}: placed ${o.done} of ${o.qty0}, skipping the rest`);
+        o.qty = o.done; S.active = null; S.unitCell = null;
+      } else S.unitCell = { r: o.rack - 1, c, key };
+    }
+    if (S.unitCell) {
+      S.phase = f < 0.2 ? 'locate' : f < 0.6 ? 'pick' : 'place';
+      S.rack[S.unitCell.r][S.unitCell.c] = S.phase === 'locate' ? 'full' : S.phase === 'pick' ? 'pick' : 'empty';
+    }
+  }
+  if (S.T >= plan.L - 0.02 && S.status === 'running') {
+    plan.lines.forEach((l) => { while (l.o.done < l.o.qty) completeUnit(l.o); });
+    S.status = 'done'; S.phase = null; S.active = null; logEv('batch', 'All items in the order are done');
+  }
+}
 function tick() {
   if (dkey(new Date()) !== TODAY) { location.reload(); return; }
-  if (S.status === 'running') {
-    S.runSec += 0.5; S.battery = Math.max(5, S.battery - 0.004);
-    const it = pending();
-    if (!it) { S.status = 'done'; S.phase = null; logEv('batch', 'All items in the order are done'); return; }
-    if (!S.phase) {
-      const row = S.rack[it.rack - 1];
-      if (it.key === 'sill trim' && !S.sillChecked) {
-        const c = row.findIndex((x) => x === 'full');
-        S.cell = { r: it.rack - 1, c: c < 0 ? 0 : c }; row[S.cell.c] = 'warn';
-        S.status = 'attention';
-        logEv('attention', `Needs attention: Rack ${it.rack}, slot ${S.cell.c + 1} - robot cannot tell if a part is there`);
-        return;
-      }
-      const c = row.findIndex((x) => x === 'full');
-      if (c < 0) {
-        logEv('attention', `Rack ${it.rack} has no more parts. ${it.label}: placed ${it.done} of ${it.qty}, skipping the rest`);
-        it.qty = it.done; if (it.qty === 0) S.order.splice(S.order.indexOf(it), 1);
-        return;
-      }
-      S.cell = { r: it.rack - 1, c }; S.phase = 'locate'; S.phaseT = 0;
-    }
-    S.phaseT += 0.5;
-    if (S.phase === 'pick' && S.phaseT <= 0.5) S.rack[S.cell.r][S.cell.c] = 'pick';
-    if (S.phaseT >= PH[S.phase]) {
-      S.phaseT = 0;
-      if (S.phase === 'locate') { S.phase = 'pick'; S.rack[S.cell.r][S.cell.c] = 'pick'; }
-      else if (S.phase === 'pick') { S.phase = 'place'; S.rack[S.cell.r][S.cell.c] = 'empty'; }
-      else {
-        it.done++; S.fixtures[it.fixture]++; S.phase = null;
-        logEv('placed', `Placed ${it.label} on Fixture ${it.fixture} (${it.done} of ${it.qty})`, 1);
-      }
-    }
+  if (S.status === 'running' && plan) {
+    S.runSec += 0.25; S.battery = Math.max(5, S.battery - 0.002);
+    advance(feed.failed ? S.T + 0.25 : elapsed());
   }
   render();
 }
 
-/* ---------- ego-view stream (sample clips; swap for a real stream later) ---------- */
-// One playlist per mission: every unique clip plays once, in order, and only wraps after all of them.
-// The clip for the first part in the order leads; the other two core clips follow, then the extras.
-const CLIPS = { 'a-pillar trim': 'video/ego_a_pillar.mp4', 'air duct': 'video/ego_air_duct.mp4', 'sill trim': 'video/ego_sill_trim.mp4' };
-const EXTRA = ['video/ego_extra_1.mp4', 'video/ego_extra_2.mp4', 'video/ego_extra_3.mp4'];
-const feed = { v: $('ego'), list: null, idx: 0, firstKey: null, restart: false, want: false };
-function buildList(firstKey) {
-  const keys = Object.keys(CLIPS), i = Math.max(0, keys.indexOf(firstKey));
-  return keys.slice(i).concat(keys.slice(0, i)).map((k) => CLIPS[k]).concat(EXTRA);
-}
-function loadClip(i) {
-  feed.idx = i % feed.list.length;
-  feed.v.src = feed.list[feed.idx]; feed.v.load();
-}
-feed.v.addEventListener('ended', () => {
-  if (!feed.list) return;
-  loadClip(feed.idx + 1);
-  if (feed.want) { const p = feed.v.play(); if (p && p.catch) p.catch(() => {}); }
-});
-function updateFeed(it) {
-  const v = feed.v, first = S.order[0];
-  if (!first) {                                   // no order: no video
-    if (feed.list) { feed.list = null; feed.firstKey = null; v.removeAttribute('src'); v.load(); }
-  } else if (feed.restart || !feed.list || (S.status === 'idle' && first.key !== feed.firstKey)) {
-    feed.restart = false; feed.firstKey = first.key; feed.list = buildList(first.key); loadClip(0);
+function updateFeed() {
+  const v = feed.v;
+  if (!S.order.length) { if (plan) { plan = null; v.removeAttribute('src'); v.load(); } }
+  else if (S.status === 'idle') {                  // preview the first frame of the clip this order will start with
+    const key = S.order.map((o) => o.key + o.qty0).join();
+    if (!plan || plan.key !== key) { buildPlan(S.order); S.T = 0; loadClip(0); }
   }
-  const playing = S.status === 'running' || S.status === 'attention';   // camera stays live while the robot waits for the operator
+  const playing = S.status === 'running' && !!plan;
   feed.want = playing;
-  if (playing && v.paused && feed.list) { const p = v.play(); if (p && p.catch) p.catch(() => {}); }
+  if (playing && v.paused) { const p = v.play(); if (p && p.catch) p.catch(() => {}); }
   if (!playing && !v.paused) v.pause();
   const msg = { idle: S.order.length ? ['Waiting to start', 'Press START to begin the mission'] : ['No order yet', 'Add parts to the order, then press START'],
-    paused: ['Stream paused', 'Robot stopped. Press RESUME'],
+    paused: ['Stream paused', 'Robot stopped. Press RESUME'], attention: ['Stream paused', 'Robot is waiting for you'],
     estop: ['Emergency stop', 'Stream stopped'], done: ['Order complete', 'Stream stopped'] }[S.status];
   $('paused').hidden = playing;
   if (msg) { $('paused-title').textContent = msg[0]; $('paused-sub').textContent = msg[1]; }
@@ -246,38 +283,36 @@ function renderHelp() {
 
 /* ---------- operator window render ---------- */
 function totals() {
-  const total = S.order.reduce((a, o) => a + o.qty, 0), done = S.order.reduce((a, o) => a + o.done, 0);
+  const total = S.order.reduce((a, o) => a + o.qty0, 0), done = S.order.reduce((a, o) => a + o.done, 0);
   return { total, done };
 }
-function fmtEta(sec) {
-  if (sec < 15) return 'Almost done';
-  const m = Math.round(sec / 60);
-  return m < 1 ? 'Under a minute left' : `About ${m} min left`;
-}
+const fmtLeft = (s) => (s < 3 ? 'Almost done' : s < 90 ? `About ${Math.round(s)} s left` : `About ${Math.round(s / 60)} min left`);
 function render() {
   const { total, done } = totals();
-  const it = pending();
+  const it = S.active || pending();
   const b = $('banner');
   b.className = 'banner s-' + S.status;
-  const left = (total - done) * 5;
+  const pct = plan ? Math.min(100, Math.round((S.T / plan.L) * 100)) : 0;
   let st, tx;
   switch (S.status) {
     case 'running':
       st = 'RUNNING';
-      tx = S.phase === 'place' ? `Placing ${it.label.toLowerCase()} on Fixture ${it.fixture}`
+      tx = !it ? 'Finishing up'
+         : S.phase === 'place' ? `Placing ${it.label.toLowerCase()} on Fixture ${it.fixture}`
          : S.phase === 'pick'  ? `Picking ${it.label.toLowerCase()} from Rack ${it.rack}`
-         : it ? `Looking for ${it.label.toLowerCase()} in Rack ${it.rack}` : 'Finishing up';
+         : `Looking for ${it.label.toLowerCase()} in Rack ${it.rack}`;
       break;
     case 'paused': st = 'STOPPED'; tx = 'Press RESUME to continue where it left off.'; break;
     case 'attention': st = 'WAITING FOR YOU'; tx = 'The robot paused. See the message below.'; break;
     case 'done': st = 'ALL DONE'; tx = `${done} parts placed. Add more to the order to keep going.`; break;
     case 'estop': st = 'EMERGENCY STOP'; tx = 'The robot is stopped. Press E-STOP again to reset it.'; break;
-    default: st = 'READY'; tx = pending() ? 'Check the order, then press START.' : 'Add parts to the order to begin.';
+    default: st = 'READY'; tx = S.order.length ? 'Check the order, then press START.' : 'Add parts to the order to begin.';
   }
   $('b-state').textContent = st; $('b-text').textContent = tx;
-  $('b-count').textContent = total ? `${Math.min(done + (it ? 1 : 0), total)} of ${total}` : '';
-  $('b-eta').textContent = S.status === 'done' ? '' : (total ? fmtEta(left) : '');
-  $('b-fill').style.width = total ? Math.round((done / total) * 100) + '%' : '0';
+  const idle = S.status === 'idle';
+  $('b-count').textContent = !plan ? '' : idle ? `${total} part${total === 1 ? '' : 's'}` : `${pct}%`;
+  $('b-eta').textContent = !plan ? '' : idle ? `About ${Math.round(plan.L)} s` : S.status === 'done' ? '' : fmtLeft(plan.L - S.T);
+  $('b-fill').style.width = idle || !plan ? '0' : pct + '%';
 
   const att = $('attention');
   const showAtt = S.status === 'attention' || (S.status === 'paused' && S.resumeTo === 'attention');
@@ -439,4 +474,4 @@ $('cal-yest').onclick = () => { const y = new Date(today.getFullYear(), today.ge
 logEv('batch', 'Session opened (demo)');
 setRole(location.hash.slice(1));
 renderCalendar(); renderDay(); render();
-setInterval(tick, 500);
+setInterval(tick, 250);

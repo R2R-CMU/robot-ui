@@ -20,7 +20,7 @@ Any static host works; all give you HTTPS (needed later for camera streams).
 
 ## What is simulated
 - Robot, rack and order progress run in the browser (`tick()` in `app.js`).
-- The camera is a playlist of six short egocentric clips (`video/`, about 30 s in total, each played once before any repeats) cropped from the Boston Dynamics video "Atlas Goes Hands On" (the picture-in-picture robot view). The first clip depends on the first part in the order, and the stream pauses whenever the robot is not running (STOP, E-STOP, idle, done); it keeps playing while the robot waits for the operator.
+- The camera is six short egocentric clips (`video/`, about 30 s in total) cropped from the Boston Dynamics video "Atlas Goes Hands On" (the picture-in-picture robot view). The footage is the mission clock: each order line gets its own part's clip plus unused extra clips if it needs more time, so nothing repeats. Progress is footage played / total footage (0-100 %), and parts are marked placed as the footage passes evenly spaced points. The stream pauses whenever the robot is not running (STOP, E-STOP, waiting for the operator, idle, done).
 - Those clips are Boston Dynamics' footage. Fine for an internal/class demo; before publishing the site publicly, get their permission or replace the clips with your own G1 recordings.
 - Past days in the calendar are generated sample data (marked "Sample data"). Today's log is real for the session but stored only in that browser (localStorage), so a manager on another computer will not see the operator's events.
 
